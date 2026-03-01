@@ -16,9 +16,6 @@ except Exception:
     REPORTLAB_AVAILABLE = False
 
 
-# ============================
-# CONFIG STREAMLIT
-# ============================
 st.set_page_config(
     page_title="Apriori Bundle Produk",
     layout="wide",
@@ -27,7 +24,6 @@ st.set_page_config(
 
 st.title("Sistem Rekomendasi Bundle Produk (Apriori)")
 
-# Tighter sidebar spacing between captions and sliders
 st.markdown(
     """
     <style>
@@ -40,10 +36,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
-# ============================
-# SIDEBAR
-# ============================
 with st.sidebar:
     st.header("Pengaturan Analisis")
 
@@ -90,23 +82,23 @@ with st.sidebar:
 
     run = st.button("Jalankan Analisis")
 
-    # Convert percent inputs to 0-1 scale for apriori functions.
     min_support = min_support_pct / 100.0
     min_conf = min_conf_pct / 100.0
 
-
-# ============================
-# MAIN CONTENT
-# ============================
 if "analysis_requested" not in st.session_state:
     st.session_state["analysis_requested"] = False
 if "analysis_data" not in st.session_state:
     st.session_state["analysis_data"] = None
 
 
+@st.cache_data(show_spinner=False)
+def tabulation_to_csv_bytes(tabulation_df: pd.DataFrame) -> bytes:
+    return tabulation_df.to_csv(index=True).encode("utf-8-sig")
+
+
 def run_analysis(file_obj):
     """Proses lengkap analisis Apriori, hasil disimpan di session_state."""
-    df, transactions = load_excel_as_transactions(file_obj)
+    df, transactions, tabulation, faktur_col, item_col = load_excel_as_transactions(file_obj)
     frequent, _ = get_frequent_itemsets(transactions, min_support)
 
     if len(frequent) == 0:
@@ -128,13 +120,15 @@ def run_analysis(file_obj):
         "transactions_len": len(transactions),
         "rules_len": len(rules),
         "simple_rules": simple_rules,
+        "tabulation": tabulation,
+        "faktur_col": faktur_col,
+        "item_col": item_col,
+        "source_df": df,
+        "source_name": getattr(file_obj, "name", "-"),
     }
     st.session_state["analysis_requested"] = True
 
 
-
-
-# Jalankan analisis hanya ketika tombol ditekan, simpan hasil di session_state
 if uploaded_file and run:
     with st.spinner("Memproses data..."):
         try:
@@ -143,13 +137,29 @@ if uploaded_file and run:
             st.error(f"Gagal memproses file: {e}")
             st.stop()
 
-# Tampilkan hasil jika sudah ada di session_state (tidak hilang saat toggle)
-if uploaded_file and st.session_state["analysis_requested"] and st.session_state["analysis_data"]:
+
+if st.session_state["analysis_requested"] and st.session_state["analysis_data"]:
 
     data = st.session_state["analysis_data"]
     simple_rules = data["simple_rules"]
 
     st.success(f"Data berhasil dibaca. Total transaksi (faktur): {data['transactions_len']}")
+
+    st.subheader("Tabulasi Transaksi (0/1)")
+    tabulation_df = data["tabulation"].copy()
+    tabulation_df.index.name = data["faktur_col"]
+    st.caption(
+        f"Ukuran tabulasi: **{tabulation_df.shape[0]:,} faktur x {tabulation_df.shape[1]:,} item**."
+    )
+
+    preview_rows = min(200, len(tabulation_df))
+    st.dataframe(tabulation_df.head(preview_rows), use_container_width=True, height=380)
+    st.download_button(
+        "Unduh Semua Tabulasi (CSV)",
+        tabulation_to_csv_bytes(tabulation_df),
+        file_name="tabulasi_transaksi_01.csv",
+        mime="text/csv",
+    )
 
     st.subheader("Aturan Asosiasi")
     st.write(f"Rules ditemukan: **{data['rules_len']}**")
@@ -160,8 +170,7 @@ if uploaded_file and st.session_state["analysis_requested"] and st.session_state
     display_table["support"] = (display_table["support"] * 100).round(2)
     display_table["confidence"] = (display_table["confidence"] * 100).round(2)
     display_table["lift"] = display_table["lift"].round(2)
-    # Show full data for export via the dataframe toolbar,
-    # but limit visible rows by height.
+
     row_height = 35
     visible_rows = max(1, len(display_rules))
     table_height = max(140, (visible_rows + 1) * row_height)
@@ -176,9 +185,6 @@ if uploaded_file and st.session_state["analysis_requested"] and st.session_state
         },
     )
 
-    # -----------------------
-    # REKOMENDASI BUNDLE
-    # -----------------------
     st.subheader("Rekomendasi Bundle Produk")
 
     for idx, (_, row) in enumerate(display_rules.iterrows()):
@@ -197,9 +203,6 @@ if uploaded_file and st.session_state["analysis_requested"] and st.session_state
                 f"ada **{conf_pct}%** peluang mereka juga membeli **{B}**."
             )
 
-    # -----------------------
-    # DOWNLOAD LAPORAN
-    # -----------------------
     st.subheader("Unduh Laporan")
     report_df = simple_rules.copy()
     report_df["support"] = (report_df["support"] * 100).round(2).astype(str) + "%"
@@ -220,7 +223,7 @@ if uploaded_file and st.session_state["analysis_requested"] and st.session_state
         styles = getSampleStyleSheet()
         elements = []
 
-        source_name = uploaded_file.name if uploaded_file else "-"
+        source_name = data.get("source_name", "-")
         report_date = date.today().strftime("%Y-%m-%d")
         elements.append(Paragraph(f"Total transaksi: {data['transactions_len']}", styles["Normal"]))
         elements.append(Paragraph(f"Rules ditemukan: {data['rules_len']}", styles["Normal"]))
@@ -281,6 +284,7 @@ if uploaded_file and st.session_state["analysis_requested"] and st.session_state
             canvas.setFillColor(colors.HexColor("#111111"))
             canvas.setFont("Helvetica-Bold", 11)
             canvas.drawString(36, height - 45, "Laporan Hasil Analisis")
+
             canvas.setFont("Helvetica", 9)
             canvas.drawRightString(width - 36, height - 45, f"Sumber: {source_name}")
 
@@ -300,7 +304,6 @@ if uploaded_file and st.session_state["analysis_requested"] and st.session_state
     else:
         st.info("Untuk export PDF, install package `reportlab` terlebih dulu.")
 
-    # Download via dataframe toolbar (top-right) exports full data.
 
 else:
     st.info("Silakan upload file dan klik *Jalankan Analisis* di sidebar.")
